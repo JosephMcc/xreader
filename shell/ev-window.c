@@ -65,9 +65,9 @@
 #include "ev-jobs.h"
 #include "ev-message-area.h"
 #include "ev-metadata.h"
-#include "ev-navigation-action.h"
 #include "ev-open-recent-action.h"
 #include "ev-page-action.h"
+#include "ev-history-action.h"
 #include "ev-password-view.h"
 #include "ev-properties-dialog.h"
 #include "ev-sidebar-annotations.h"
@@ -226,7 +226,7 @@ struct _EvWindowPrivate {
 
 #define PAGE_SELECTOR_ACTION	"PageSelector"
 #define ZOOM_CONTROL_ACTION	"ViewZoom"
-#define NAVIGATION_ACTION	"Navigation"
+#define HISTORY_ACTION	"History"
 
 #ifdef ENABLE_DBUS
 #define EV_WINDOW_DBUS_OBJECT_PATH "/org/x/reader/Window/%d"
@@ -465,7 +465,6 @@ ev_window_setup_action_sensitivity (EvWindow *ev_window)
 	/* Toolbar-specific actions: */
 	ev_window_set_action_sensitive (ev_window, PAGE_SELECTOR_ACTION, has_pages);
 	ev_window_set_action_sensitive (ev_window, ZOOM_CONTROL_ACTION,  has_pages);
-	ev_window_set_action_sensitive (ev_window, NAVIGATION_ACTION,  FALSE);
 
         ev_window_update_actions (ev_window);
 }
@@ -823,120 +822,110 @@ ev_window_warning_message (EvWindow    *window,
 	ev_window_set_message_area (window, area);
 }
 
-typedef struct _PageTitleData {
-	const gchar *page_label;
-	gchar       *page_title;
-} PageTitleData;
+typedef struct _LinkTitleData {
+	EvLink      *link;
+	const gchar *link_title;
+} LinkTitleData;
 
 static gboolean
-ev_window_find_page_title (GtkTreeModel  *tree_model,
-			   GtkTreePath   *path,
-			   GtkTreeIter   *iter,
-			   PageTitleData *data)
+find_link_cb (GtkTreeModel  *tree_model,
+			  GtkTreePath   *path,
+			  GtkTreeIter   *iter,
+			  LinkTitleData *data)
 {
-	gchar *page_string;
-	
+	EvLink *link;
+	gboolean retval = FALSE;
+
 	gtk_tree_model_get (tree_model, iter,
-			    EV_DOCUMENT_LINKS_COLUMN_PAGE_LABEL, &page_string, 
+			    EV_DOCUMENT_LINKS_COLUMN_LINK, &link,
 			    -1);
-	
-	if (!page_string)
-		return FALSE;
-	
-	if (!strcmp (page_string, data->page_label)) {
-		gtk_tree_model_get (tree_model, iter,
-				    EV_DOCUMENT_LINKS_COLUMN_MARKUP, &data->page_title,
-				    -1);
-		g_free (page_string);
-		return TRUE;
+
+	if (!link)
+	{
+		return retval;
 	}
-	
-	g_free (page_string);
-	return FALSE;
+
+	if (ev_link_action_equal (ev_link_get_action (data->link), ev_link_get_action (link)))
+	{
+		data->link_title = ev_link_get_title (link);
+		retval = TRUE;
+	}
+
+	g_object_unref (link);
+
+	return retval;
 }
 
-static gchar *
-ev_window_get_page_title (EvWindow    *window,
-			  const gchar *page_label)
+static const gchar *
+ev_window_find_title_for_link (EvWindow *window,
+			  				   EvLink   *link)
 {
 	if (EV_IS_DOCUMENT_LINKS (window->priv->document) &&
 	    ev_document_links_has_document_links (EV_DOCUMENT_LINKS (window->priv->document))) {
-		PageTitleData data;
+		LinkTitleData data;
 		GtkTreeModel *model;
 
-		data.page_label = page_label;
-		data.page_title = NULL;
+		data.link = link;
+		data.link_title = NULL;
 
 		g_object_get (G_OBJECT (window->priv->sidebar_links),
 			      "model", &model,
 			      NULL);
 		if (model) {
 			gtk_tree_model_foreach (model,
-						(GtkTreeModelForeachFunc)ev_window_find_page_title,
+						(GtkTreeModelForeachFunc)find_link_cb,
 						&data);
 
 			g_object_unref (model);
 		}
 
-		return data.page_title;
+		return data.link_title;
 	}
 
 	return NULL;
 }
 
 static void
-ev_window_add_history (EvWindow *window, gint page, EvLink *link)
-{
-	gchar *page_label = NULL;
-	gchar *page_title;
-	gchar *link_title;
-	EvLink *real_link;
-	EvLinkAction *action;
-	EvLinkDest *dest;
-	
-	if (window->priv->history == NULL)
-		return;
-
-	if (!EV_IS_DOCUMENT_LINKS (window->priv->document))
-		return;
-	
-	if (link) {
-		action = g_object_ref (ev_link_get_action (link));
-		dest = ev_link_action_get_dest (action);
-		page_label = ev_document_links_get_dest_page_label (EV_DOCUMENT_LINKS (window->priv->document), dest);
-	} else {
-		dest = ev_link_dest_new_page (page);
-		action = ev_link_action_new_dest (dest);
-		page_label = ev_document_get_page_label (window->priv->document, page);
-	}
-
-	if (!page_label)
-		return;
-
-	page_title = ev_window_get_page_title (window, page_label);
-	if (page_title) {
-		link_title = g_strdup_printf (_("Page %s — %s"), page_label, page_title);
-		g_free (page_title);
-	} else {
-		link_title = g_strdup_printf (_("Page %s"), page_label);
-	}
-
-	real_link = ev_link_new (link_title, action);
-	
-	ev_history_add_link (window->priv->history, real_link);
-
-	g_free (link_title);
-	g_free (page_label);
-	g_object_unref (real_link);
-}
-
-static void
 view_handle_link_cb (EvView *view, EvLink *link, EvWindow *window)
 {
-	int current_page = ev_document_model_get_page (window->priv->model);
-	
-	ev_window_add_history (window, 0, link);
-	ev_window_add_history (window, current_page, NULL);
+	EvLink *new_link = NULL;
+
+	if (!ev_link_get_title (link))
+	{
+		const gchar *link_title;
+
+		link_title = ev_window_find_title_for_link (window, link);
+		if (link_title)
+		{
+			new_link = ev_link_new (link_title, ev_link_get_action (link));
+		}
+		else
+		{
+			EvLinkAction *action;
+			EvLinkDest   *dest;
+			gchar        *page_label;
+			gchar        *title;
+
+			action = ev_link_get_action (link);
+			dest = ev_link_action_get_dest (action);
+			page_label = ev_document_links_get_dest_page_label (EV_DOCUMENT_LINKS (window->priv->document), dest);
+			if (!page_label)
+			{
+				return;
+			}
+
+			title = g_strdup_printf (_("Page %s"), page_label);
+			g_free (page_label);
+
+			new_link = ev_link_new (title, action);
+			g_free (title);
+		}
+	}
+	ev_history_add_link (window->priv->history, new_link ? new_link : link);
+	if (new_link)
+	{
+		g_object_unref (new_link);
+	}
 }
 
 static void
@@ -963,11 +952,6 @@ ev_window_page_changed_cb (EvWindow        *ev_window,
 	ev_window_update_actions (ev_window);
 
 	ev_window_update_find_status_message (ev_window);
-
-	if (abs (new_page - old_page) > 1) {
-		ev_window_add_history (ev_window, new_page, NULL);
-		ev_window_add_history (ev_window, old_page, NULL);
-	}
 
 	if (ev_window->priv->metadata && !ev_window_is_empty (ev_window))
 		ev_metadata_set_int (ev_window->priv->metadata, "page", new_page);
@@ -1477,31 +1461,24 @@ ev_window_setup_document (EvWindow *ev_window)
 {
 	const EvDocumentInfo *info;
 	EvDocument *document = ev_window->priv->document;
-	GtkAction *action;
 
 	ev_window->priv->setup_document_idle = 0;
 	ev_window_refresh_window_thumbnail (ev_window);
-	
+
 	ev_window_set_page_mode (ev_window, PAGE_MODE_DOCUMENT);
-	
+
 	ev_window_title_set_document (ev_window->priv->title, document);
 	ev_window_title_set_uri (ev_window->priv->title, ev_window->priv->uri);
 
 	ev_window_ensure_settings (ev_window);
 	ev_window_setup_action_sensitivity (ev_window);
 
-	if (ev_window->priv->history)
-		g_object_unref (ev_window->priv->history);
-	ev_window->priv->history = ev_history_new ();
-	action = gtk_action_group_get_action (ev_window->priv->action_group, NAVIGATION_ACTION);
-        ev_navigation_action_set_history (EV_NAVIGATION_ACTION (action), ev_window->priv->history);
-	
 	if (ev_window->priv->properties) {
 		ev_properties_dialog_set_document (EV_PROPERTIES_DIALOG (ev_window->priv->properties),
 						   ev_window->priv->uri,
 					           ev_window->priv->document);
 	}
-	
+
 	info = ev_document_get_info (document);
 	update_document_mode (ev_window, info->mode);
 
@@ -1718,11 +1695,7 @@ ev_window_load_job_cb (EvJob *job,
 		}
 
 		ev_window_handle_link (ev_window, ev_window->priv->dest);
-		/* Already unrefed by ev_link_action
-		 * FIXME: link action should inc dest ref counting
-		 * or not unref it at all
-		 */
-		ev_window->priv->dest = NULL;
+		g_clear_object (&ev_window->priv->dest);
 
 		switch (ev_window->priv->window_mode) {
 		        case EV_WINDOW_MODE_FULLSCREEN:
@@ -1808,11 +1781,7 @@ ev_window_reload_job_cb (EvJob    *job,
 					job->document);
 	if (ev_window->priv->dest) {
 		ev_window_handle_link (ev_window, ev_window->priv->dest);
-		/* Already unrefed by ev_link_action
-		 * FIXME: link action should inc dest ref counting
-		 * or not unref it at all
-		 */
-		ev_window->priv->dest = NULL;
+		g_clear_object (&ev_window->priv->dest);
 	}
 
 	/* Restart the search after reloading */
@@ -2244,10 +2213,7 @@ ev_window_open_document (EvWindow       *ev_window,
 		link_action = ev_link_action_new_dest (dest);
 		link = ev_link_new (NULL, link_action);
 		ev_view_handle_link (EV_VIEW (ev_window->priv->view), link);
-		/* FIXME: link action should inc dest ref counting
-		 * or not unref it at all
-		 */
-		g_object_ref (dest);
+		g_object_unref (link_action);
 		g_object_unref (link);
 	}
 
@@ -4681,12 +4647,10 @@ ev_window_cmd_bookmarks_add (GtkAction *action,
 {
 	EvBookmark bm;
 	gchar     *page_label;
-	gchar     *page_title;
 
 	bm.page = ev_document_model_get_page (window->priv->model);
 	page_label = ev_document_get_page_label (window->priv->document, bm.page);
-	page_title = ev_window_get_page_title (window, page_label);
-	bm.title = page_title ? page_title : g_strdup_printf (_("Page %s"), page_label);
+	bm.title = g_strdup_printf (_("Page %s"), page_label);
 	g_free (page_label);
 
 	/* EvBookmarks takes ownership of bookmark */
@@ -6125,7 +6089,7 @@ sidebar_links_link_activated_cb (EvSidebarLinks *sidebar_links, EvLink *link, Ev
 }
 
 static void
-activate_link_cb (EvPageAction *page_action, EvLink *link, EvWindow *window)
+activate_link_cb (GObject *object, EvLink *link, EvWindow *window)
 {
 	if (window->priv->view) {
 		ev_view_handle_link (EV_VIEW (window->priv->view), link);
@@ -6139,19 +6103,19 @@ activate_link_cb (EvPageAction *page_action, EvLink *link, EvWindow *window)
 #endif
 }
 
-static void
-navigation_action_activate_link_cb (EvNavigationAction *action, EvLink *link, EvWindow *window)
-{
-#if ENABLE_EPUB
-	if (window->priv->document->iswebdocument == TRUE )  {
-		ev_web_view_handle_link(EV_WEB_VIEW(window->priv->webview),link);
-		gtk_widget_grab_focus (window->priv->webview);
-		return;
-	}
-#endif	
-	ev_view_handle_link (EV_VIEW (window->priv->view), link);
-	gtk_widget_grab_focus (window->priv->view);
-}
+// static void
+// navigation_action_activate_link_cb (EvNavigationAction *action, EvLink *link, EvWindow *window)
+// {
+// #if ENABLE_EPUB
+// 	if (window->priv->document->iswebdocument == TRUE )  {
+// 		ev_web_view_handle_link(EV_WEB_VIEW(window->priv->webview),link);
+// 		gtk_widget_grab_focus (window->priv->webview);
+// 		return;
+// 	}
+// #endif	
+// 	ev_view_handle_link (EV_VIEW (window->priv->view), link);
+// 	gtk_widget_grab_focus (window->priv->view);
+// }
 
 static void
 sidebar_layers_visibility_changed (EvSidebarLayers *layers,
@@ -6241,17 +6205,11 @@ register_custom_actions (EvWindow *window, GtkActionGroup *group)
 	gtk_action_group_add_action (group, action);
 	g_object_unref (action);
 
-	action = g_object_new (EV_TYPE_NAVIGATION_ACTION,
-			       "name", NAVIGATION_ACTION,
-			       "label", _("Navigation"),
-			       "is_important", TRUE,
-			       "short_label", _("Back"),
-			       "stock_id", GTK_STOCK_GO_BACK,
-			       /*translators: this is the history action*/
-			       "tooltip", _("Move across visited pages"),
+	action = g_object_new (EV_TYPE_HISTORY_ACTION,
+			       "name", HISTORY_ACTION,
+			       "label", _("History"),
 			       NULL);
-	g_signal_connect (action, "activate_link",
-			  G_CALLBACK (navigation_action_activate_link_cb), window);
+	ev_history_action_set_history (EV_HISTORY_ACTION (action), window->priv->history);
 	gtk_action_group_add_action (group, action);
 	g_object_unref (action);
 
@@ -7224,9 +7182,6 @@ ev_window_init (EvWindow *ev_window)
 	GtkWidget *menuitem;
 	GtkStyleContext *context;
 	GtkWidget *tool_item;
-	GtkWidget *tool_box;
-	GtkWidget *box;
-	GtkWidget *button;
 	GtkAction *action;
 	guint page_cache_mb;
 	gchar *ui_path;
@@ -7279,6 +7234,10 @@ ev_window_init (EvWindow *ev_window)
 
 	context = gtk_widget_get_style_context (GTK_WIDGET (ev_window));
 	gtk_style_context_add_class (context, "xreader-window");
+
+	ev_window->priv->history = ev_history_new (ev_window->priv->model);
+	g_signal_connect (ev_window->priv->history, "activate-link",
+			  		  G_CALLBACK (activate_link_cb), ev_window);
 
 	ev_window->priv->main_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 	gtk_container_add (GTK_CONTAINER (ev_window), ev_window->priv->main_box);
@@ -7363,23 +7322,10 @@ ev_window_init (EvWindow *ev_window)
 								 GTK_STYLE_CLASS_PRIMARY_TOOLBAR);
 	gtk_container_add (GTK_CONTAINER (ev_window->priv->toolbar_revealer), ev_window->priv->toolbar);
 
-	tool_item = gtk_tool_item_new ();
-	gtk_toolbar_insert (GTK_TOOLBAR (ev_window->priv->toolbar), GTK_TOOL_ITEM (tool_item), 0);
+	action = gtk_action_group_get_action (ev_window->priv->action_group, "History");
+	tool_item = gtk_action_create_tool_item (action);
 	gtk_widget_set_margin_end (tool_item, 12);
-
-	tool_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
-	gtk_container_add (GTK_CONTAINER (tool_item), tool_box);
-
-	box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
-	gtk_box_pack_start (GTK_BOX (tool_box), box, FALSE, FALSE, 0);
-
-	action = gtk_action_group_get_action (ev_window->priv->action_group, "GoPreviousPage");
-	button = create_toolbar_button (action);
-	gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
-
-	action = gtk_action_group_get_action (ev_window->priv->action_group, "GoNextPage");
-	button = create_toolbar_button (action);
-	gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+	gtk_container_add (GTK_CONTAINER (ev_window->priv->toolbar), tool_item);
 
 	action = gtk_action_group_get_action (ev_window->priv->action_group, "PageSelector");
 	tool_item = gtk_action_create_tool_item (action);

@@ -44,6 +44,10 @@ xreader_SOURCES=				\
 	ev-file-monitor.c		\
 	ev-history.c			\
 	ev-history.h			\
+	ev-history-action.c 	\
+	ev-history-action.h 	\
+	ev-history-action-widget.c \
+	ev-history-action-widget.h \
 	ev-keyring.h			\
 	ev-keyring.c			\
 	ev-marshal.c			\
@@ -52,10 +56,6 @@ xreader_SOURCES=				\
 	ev-message-area.h		\
 	ev-metadata.c			\
 	ev-metadata.h			\
-	ev-navigation-action.c		\
-	ev-navigation-action.h		\
-	ev-navigation-action-widget.c	\
-	ev-navigation-action-widget.h	\
 	ev-password-view.h		\
 	ev-password-view.c		\
 	ev-progress-message-area.h	\

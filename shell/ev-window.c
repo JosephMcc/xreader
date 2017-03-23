@@ -318,6 +318,8 @@ static void     ev_view_popup_cmd_copy_image            (GtkAction        *actio
 							 EvWindow         *window);
 static void     ev_view_popup_cmd_annot_properties      (GtkAction        *action,
 							 EvWindow         *window);
+static void     ev_view_popup_cmd_remove_annotation (GtkAction *action,
+													 EvWindow  *window);
 static void	ev_attachment_popup_cmd_open_attachment (GtkAction        *action,
 							 EvWindow         *window);
 static void	ev_attachment_popup_cmd_save_attachment_as (GtkAction     *action, 
@@ -5151,16 +5153,26 @@ static void
 view_menu_annot_popup (EvWindow     *ev_window,
 		       EvAnnotation *annot)
 {
+	g_printerr ("annot_popup\n");
 	GtkAction *action;
 	gboolean   show_annot = FALSE;
+	gboolean can_remove_annots;
+
 	if (ev_window->priv->document->iswebdocument == TRUE ) return ;
 	if (ev_window->priv->annot)
 		g_object_unref (ev_window->priv->annot);
 	ev_window->priv->annot = (annot) ? g_object_ref (annot) : NULL;
 
+	can_remove_annots = ev_document_annotations_can_remove_annotation (EV_DOCUMENT_ANNOTATIONS (ev_window->priv->document));
+
 	action = gtk_action_group_get_action (ev_window->priv->view_popup_action_group,
 					      "AnnotProperties");
 	gtk_action_set_visible (action, (annot != NULL && EV_IS_ANNOTATION_MARKUP (annot)));
+
+	g_printerr ("can_remove_annots: %d\n", can_remove_annots);
+
+	action = gtk_action_group_get_action (ev_window->priv->view_popup_action_group, "RemoveAnnot");
+	gtk_action_set_visible (action, (annot != NULL && can_remove_annots));
 
 	if (annot && EV_IS_ANNOTATION_ATTACHMENT (annot)) {
 		EvAttachment *attachment;
@@ -5211,6 +5223,8 @@ view_menu_popup_cb (EvView   *view,
 			has_annot = TRUE;
 		}
 	}
+
+	g_printerr ("has_annot: %d\n", has_annot);
 
 	if (!has_link)
 		view_menu_link_popup (ev_window, NULL);
@@ -5307,13 +5321,8 @@ ev_window_find_job_updated_cb (EvJobFind *job,
 		ev_web_view_find_changed(EV_WEB_VIEW(ev_window->priv->webview),
 								 job->results,job->text, job->case_sensitive);
 	}
-	else 
 #endif
-	{
-		ev_view_find_changed (EV_VIEW (ev_window->priv->view),
-				      ev_job_find_get_results (job),
-				      page);
-	}
+
 	ev_window_update_find_status_message (ev_window);
 }
 
@@ -5400,7 +5409,9 @@ ev_window_search_start (EvWindow *ev_window)
 							     ev_document_get_n_pages (ev_window->priv->document),
 							     search_string,
 							     egg_find_bar_get_case_sensitive (find_bar));
-		
+
+		ev_view_find_started (EV_VIEW (ev_window->priv->view), EV_JOB_FIND (ev_window->priv->find_job));
+
 		g_signal_connect (ev_window->priv->find_job, "finished",
 				  G_CALLBACK (ev_window_find_job_finished_cb),
 				  ev_window);
@@ -6101,7 +6112,9 @@ static const GtkActionEntry view_popup_entries [] = {
 	{ "CopyImage", NULL, N_("Copy _Image"), NULL,
 	  NULL, G_CALLBACK (ev_view_popup_cmd_copy_image) },
 	{ "AnnotProperties", NULL, N_("Annotation Properties…"), NULL,
-	  NULL, G_CALLBACK (ev_view_popup_cmd_annot_properties) }
+	  NULL, G_CALLBACK (ev_view_popup_cmd_annot_properties) },
+	{ "RemoveAnnot", NULL, N_("Remove Annotation"), NULL,
+	  NULL, G_CALLBACK (ev_view_popup_cmd_remove_annotation) }
 };
 
 static const GtkActionEntry attachment_popup_entries [] = {
@@ -6193,6 +6206,14 @@ view_annot_added (EvView       *view,
 {
 	ev_sidebar_annotations_annot_added (EV_SIDEBAR_ANNOTATIONS (window->priv->sidebar_annots),
 					    annot);
+}
+
+static void
+view_annot_removed (EvView       *view,
+					EvAnnotation *annot,
+					EvWindow     *window)
+{
+	ev_sidebar_annotations_annot_removed (EV_SIDEBAR_ANNOTATIONS (window->priv->sidebar_annots));
 }
 
 static void
@@ -6882,6 +6903,13 @@ ev_view_popup_cmd_annot_properties (GtkAction *action,
 }
 
 static void
+ev_view_popup_cmd_remove_annotation (GtkAction *action,
+				    				 EvWindow  *window)
+{
+	ev_view_remove_annotation (EV_VIEW (window->priv->view), window->priv->annot);
+}
+
+static void
 ev_attachment_popup_cmd_open_attachment (GtkAction *action, EvWindow *window)
 {
 	GList     *l;
@@ -7539,6 +7567,9 @@ ev_window_init (EvWindow *ev_window)
 	g_signal_connect_object (ev_window->priv->view, "annot-added",
 				 G_CALLBACK (view_annot_added),
 				 ev_window, 0);
+	g_signal_connect_object (ev_window->priv->view, "annot-removed",
+							 G_CALLBACK (view_annot_removed),
+							 ev_window, 0);
 	g_signal_connect_object (ev_window->priv->view, "layers-changed",
 				 G_CALLBACK (view_layers_changed_cb),
 				 ev_window, 0);

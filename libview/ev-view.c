@@ -57,6 +57,7 @@ enum {
 	SIGNAL_SELECTION_CHANGED,
 	SIGNAL_SYNC_SOURCE,
 	SIGNAL_ANNOT_ADDED,
+	SIGNAL_ANNOT_REMOVED,
 	SIGNAL_LAYERS_CHANGED,
 	N_SIGNALS
 };
@@ -118,24 +119,12 @@ static void       compute_border                             (EvView            
 static void       get_page_y_offset                          (EvView             *view,
 							      int                 page,
 							      int                *y_offset);
-static void       view_rect_to_doc_rect                      (EvView             *view,
-							      GdkRectangle       *view_rect,
-							      GdkRectangle       *page_area,
-							      EvRectangle        *doc_rect);
-static void       doc_rect_to_view_rect                      (EvView             *view,
-							      int                 page,
-							      EvRectangle        *doc_rect,
-							      GdkRectangle       *view_rect);
 static void       find_page_at_location                      (EvView             *view,
 							      gdouble             x,
 							      gdouble             y,
 							      gint               *page,
 							      gint               *x_offset,
 							      gint               *y_offset);
-static void       doc_point_to_view_point 		     (EvView             *view,
-				                              int                 page,
-							      EvPoint            *doc_point,
-					     	              GdkPoint           *view_point);
 /*** Hyperrefs ***/
 static EvLink *   ev_view_get_link_at_location 		     (EvView             *view,
 				  	         	      gdouble             x,
@@ -195,10 +184,6 @@ static void       highlight_find_results                     (EvView            
 static void       highlight_forward_search_results           (EvView             *view,
 							      cairo_t            *cr,
 							      int                 page);
-static void       focus_annotation                           (EvView             *view,
-							      cairo_t            *cr,
-							      int                 page,
-							      GdkRectangle       *clip);
 static void       draw_one_page                              (EvView             *view,
 							      gint                page,
 							      cairo_t            *cr,
@@ -544,8 +529,8 @@ ev_view_scroll_to_page_position (EvView *view, GtkOrientation orientation)
 	} else {
 		GdkPoint view_point;
 
-		doc_point_to_view_point (view, view->current_page,
-					 &view->pending_point, &view_point);
+		_ev_view_transform_doc_point_to_view_point (view, view->current_page,
+					 								&view->pending_point, &view_point);
 		x = view_point.x;
 		y = view_point.y;
 	}
@@ -593,16 +578,18 @@ view_set_adjustment_values (EvView         *view,
 	if (zoom_center < 0)
 		zoom_center = page_size * 0.5;
 
-	switch (view->pending_scroll) {
-    	        case SCROLL_TO_KEEP_POSITION:
-    	        case SCROLL_TO_FIND_LOCATION:
-			factor = value / upper;
-			break;
-    	        case SCROLL_TO_PAGE_POSITION:
-			break;
-    	        case SCROLL_TO_CENTER:
-			factor = (value + zoom_center) / upper;
-			break;
+	if (upper != .0) {
+		switch (view->pending_scroll) {
+	    	        case SCROLL_TO_KEEP_POSITION:
+	    	        case SCROLL_TO_FIND_LOCATION:
+				factor = value / upper;
+				break;
+	    	        case SCROLL_TO_PAGE_POSITION:
+				break;
+	    	        case SCROLL_TO_CENTER:
+				factor = (value + zoom_center) / upper;
+				break;
+		}
 	}
 
 	upper = MAX (alloc_size, req_size);
@@ -837,7 +824,7 @@ compute_scroll_increment (EvView        *view,
 	rect.y = view->scroll_y + (scroll == GTK_SCROLL_PAGE_BACKWARD ? 5 : allocation.height - 5);
 	rect.width = page_area.width;
 	rect.height = 1;
-	view_rect_to_doc_rect (view, &rect, &page_area, &doc_rect);
+	_ev_view_transform_view_rect_to_doc_rect (view, &rect, &page_area, &doc_rect);
 
 	/* Convert the doc rectangle into a GdkRectangle */
 	rect.x = doc_rect.x1;
@@ -1217,22 +1204,22 @@ get_doc_page_size (EvView  *view,
 	}
 }
 
-static void
-view_point_to_doc_point (EvView *view,
-			 GdkPoint *view_point,
-			 GdkRectangle *page_area,
-			 double  *doc_point_x,
-			 double  *doc_point_y)
+void
+_ev_view_transform_view_point_to_doc_point (EvView       *view,
+											GdkPoint     *view_point,
+											GdkRectangle *page_area,
+											double       *doc_point_x,
+											double       *doc_point_y)
 {
 	*doc_point_x = (double) (view_point->x - page_area->x) / view->scale;
 	*doc_point_y = (double) (view_point->y - page_area->y) / view->scale;
 }
 
-static void
-view_rect_to_doc_rect (EvView *view,
-		       GdkRectangle *view_rect,
-		       GdkRectangle *page_area,
-		       EvRectangle  *doc_rect)
+void
+_ev_view_transform_view_rect_to_doc_rect (EvView       *view,
+									      GdkRectangle *view_rect,
+									      GdkRectangle *page_area,
+									      EvRectangle  *doc_rect)
 {
 	doc_rect->x1 = (double) (view_rect->x - page_area->x) / view->scale;
 	doc_rect->y1 = (double) (view_rect->y - page_area->y) / view->scale;
@@ -1240,11 +1227,11 @@ view_rect_to_doc_rect (EvView *view,
 	doc_rect->y2 = doc_rect->y1 + (double) view_rect->height / view->scale;
 }
 
-static void
-doc_point_to_view_point (EvView       *view,
-                         int           page,
-		         EvPoint      *doc_point,
-		         GdkPoint     *view_point)
+void
+_ev_view_transform_doc_point_to_view_point (EvView   *view,
+                         					int       page,
+									        EvPoint  *doc_point,
+									        GdkPoint *view_point)
 {
 	GdkRectangle page_area;
 	GtkBorder border;
@@ -1277,11 +1264,11 @@ doc_point_to_view_point (EvView       *view,
 	view_point->y = view_y + page_area.y + border.top;
 }
 
-static void
-doc_rect_to_view_rect (EvView       *view,
-                       int           page,
-		       EvRectangle  *doc_rect,
-		       GdkRectangle *view_rect)
+void
+_ev_view_transform_doc_rect_to_view_rect (EvView       *view,
+                       					  int           page,
+									      EvRectangle  *doc_rect,
+									      GdkRectangle *view_rect)
 {
 	GdkRectangle page_area;
 	GtkBorder border;
@@ -1475,7 +1462,7 @@ ev_view_get_area_from_mapping (EvView        *view,
 	EvMapping *mapping;
 
 	mapping = ev_mapping_list_find (mapping_list, data);
-	doc_rect_to_view_rect (view, page, &mapping->area, area);
+	_ev_view_transform_doc_rect_to_view_rect (view, page, &mapping->area, area);
 	area->x -= view->scroll_x;
 	area->y -= view->scroll_y;
 }
@@ -1510,34 +1497,46 @@ ev_view_put_to_doc_rect (EvView      *view,
 {
 	GdkRectangle area;
 
-	doc_rect_to_view_rect (view, page, doc_rect, &area);
+	_ev_view_transform_doc_rect_to_view_rect (view, page, doc_rect, &area);
 	area.x -= view->scroll_x;
 	area.y -= view->scroll_y;
 	ev_view_put (view, child_widget, area.x, area.y, page, doc_rect);
 }
 
 /*** Hyperref ***/
-static EvLink *
-ev_view_get_link_at_location (EvView  *view,
-  	         	      gdouble  x,
-		              gdouble  y)
+static EvMapping *
+get_link_mapping_at_location (EvView  *view,
+							  gdouble  x,
+							  gdouble  y,
+							  gint    *page)
 {
-	gint page = -1;
 	gint x_new = 0, y_new = 0;
 	EvMappingList *link_mapping;
 
 	if (!EV_IS_DOCUMENT_LINKS (view->document))
 		return NULL;
 
-	if (!get_doc_point_from_location (view, x, y, &page, &x_new, &y_new))
+	if (!get_doc_point_from_location (view, x, y, page, &x_new, &y_new))
 		return NULL;
 
-	link_mapping = ev_page_cache_get_link_mapping (view->page_cache, page);
-
+	link_mapping = ev_page_cache_get_link_mapping (view->page_cache, *page);
 	if (link_mapping)
-		return ev_mapping_list_get_data (link_mapping, x_new, y_new);
-	else
-		return NULL;
+		return ev_mapping_list_get (link_mapping, x_new, y_new);
+
+	return NULL;
+}
+
+static EvLink *
+ev_view_get_link_at_location (EvView  *view,
+							  gdouble  x,
+							  gdouble  y)
+{
+	EvMapping *mapping;
+	gint page;
+
+	mapping = get_link_mapping_at_location (view, x, y, &page);
+
+	return mapping ? mapping->data : NULL;
 }
 
 static void
@@ -1973,28 +1972,108 @@ ev_view_get_image_at_location (EvView  *view,
 		return NULL;
 }
 
-/*** Forms ***/
-static EvFormField *
-ev_view_get_form_field_at_location (EvView  *view,
-				    gdouble  x,
-				    gdouble  y)
+/*** Focus ***/
+static gboolean
+ev_view_get_focused_area (EvView       *view,
+						  GdkRectangle *area)
 {
-	gint page = -1;
+	if (!view->focused_element)
+	{
+		return FALSE;
+	}
+
+	_ev_view_transform_doc_rect_to_view_rect (view,
+											  view->focused_element_page,
+											  &view->focused_element->area,
+											  area);
+	area->x -= view->scroll_x + 1;
+	area->y -= view->scroll_y + 1;
+	area->width += 1;
+	area->height += 1;
+
+	return TRUE;
+}
+
+void
+_ev_view_set_focused_element (EvView    *view,
+							  EvMapping *element_mapping,
+							  gint       page)
+{
+	GdkRectangle view_rect;
+	cairo_region_t *region = NULL;
+
+	if (view->focused_element == element_mapping)
+	{
+		return;
+	}
+
+	if (ev_view_get_focused_area (view, &view_rect))
+	{
+		region = cairo_region_create_rectangle (&view_rect);
+	}
+
+	view->focused_element = element_mapping;
+	view->focused_element_page = page;
+
+	if (ev_view_get_focused_area (view, &view_rect))
+	{
+		if (!region)
+		{
+			region = cairo_region_create_rectangle (&view_rect);
+		}
+		else
+		{
+			cairo_region_union_rectangle (region, &view_rect);
+		}
+
+		ev_document_model_set_page (view->model, page);
+		view_rect.x += view->scroll_x;
+		view_rect.y += view->scroll_y;
+		ensure_rectangle_is_visible (view, &view_rect);
+	}
+
+	if (region)
+	{
+		gdk_window_invalidate_region (gtk_widget_get_window (GTK_WIDGET (view)), region, TRUE);
+		cairo_region_destroy (region);
+	}
+}
+
+/*** Forms ***/
+static EvMapping *
+get_form_field_mapping_at_location (EvView  *view,
+				    				gdouble  x,
+				    				gdouble  y,
+				    				gint    *page)
+{
 	gint x_new = 0, y_new = 0;
 	EvMappingList *forms_mapping;
-	
+
 	if (!EV_IS_DOCUMENT_FORMS (view->document))
 		return NULL;
 
-	if (!get_doc_point_from_location (view, x, y, &page, &x_new, &y_new))
+	if (!get_doc_point_from_location (view, x, y, page, &x_new, &y_new))
 		return NULL;
 
-	forms_mapping = ev_page_cache_get_form_field_mapping (view->page_cache, page);
+	forms_mapping = ev_page_cache_get_form_field_mapping (view->page_cache, *page);
 
 	if (forms_mapping)
-		return ev_mapping_list_get_data (forms_mapping, x_new, y_new);
-	else
-		return NULL;
+		return ev_mapping_list_get (forms_mapping, x_new, y_new);
+
+	return NULL;
+}
+
+static EvFormField *
+ev_view_get_form_field_at_location (EvView  *view,
+									gdouble  x,
+									gdouble  y)
+{
+	EvMapping *field_mapping;
+	gint page;
+
+	field_mapping = get_form_field_mapping_at_location (view, x, y, &page);
+
+	return field_mapping ? field_mapping->data : NULL;
 }
 
 static cairo_region_t *
@@ -2028,65 +2107,77 @@ ev_view_form_field_destroy (GtkWidget *widget,
 	g_idle_add ((GSourceFunc)ev_view_forms_remove_widgets, view);
 }
 
-static GtkWidget *
-ev_view_form_field_button_create_widget (EvView      *view,
-					 EvFormField *field)
+static void
+ev_view_form_field_button_toggle (EvView      *view,
+					 			  EvFormField *field)
 {
+	EvMappingList *forms_mapping;
+	cairo_region_t *region;
+	gboolean state;
+	GList *l;
 	EvFormFieldButton *field_button = EV_FORM_FIELD_BUTTON (field);
-	cairo_region_t    *field_region = NULL;
-	
-	switch (field_button->type) {
-	        case EV_FORM_FIELD_BUTTON_PUSH:
-			return NULL;
-	        case EV_FORM_FIELD_BUTTON_CHECK:
-  	        case EV_FORM_FIELD_BUTTON_RADIO: {
-			gboolean       state;
-			EvMappingList *forms_mapping;
-			GList         *l;
 
-			state = ev_document_forms_form_field_button_get_state (EV_DOCUMENT_FORMS (view->document),
-									       field);
-
-			/* FIXME: it actually depends on NoToggleToOff flags */
-			if (field_button->type == EV_FORM_FIELD_BUTTON_RADIO &&
-			    state && field_button->state)
-				return NULL;
-			
-			field_region = ev_view_form_field_get_region (view, field);
-
-			/* For radio buttons and checkbox buttons that are in a set
-			 * we need to update also the region for the current selected item
-			 */
-			forms_mapping = ev_page_cache_get_form_field_mapping (view->page_cache,
-									      field->page->index);
-			for (l = ev_mapping_list_get_list (forms_mapping); l; l = g_list_next (l)) {
-				EvFormField *button = ((EvMapping *)(l->data))->data;
-				cairo_region_t *button_region;
-
-				if (button->id == field->id)
-					continue;
-
-				/* FIXME: only buttons in the same group should be updated */
-				if (!EV_IS_FORM_FIELD_BUTTON (button) ||
-				    EV_FORM_FIELD_BUTTON (button)->type != field_button->type ||
-				    EV_FORM_FIELD_BUTTON (button)->state != TRUE)
-					continue;
-
-				button_region = ev_view_form_field_get_region (view, button);
-				cairo_region_union (field_region, button_region);
-				cairo_region_destroy (button_region);
-			}
-			
-			ev_document_forms_form_field_button_set_state (EV_DOCUMENT_FORMS (view->document),
-								       field, !state);
-			field_button->state = !state;
-		}
-			break;
+	if (field_button->type == EV_FORM_FIELD_BUTTON_PUSH)
+	{
+		return;
 	}
 
-	ev_view_reload_page (view, field->page->index, field_region);
-	cairo_region_destroy (field_region);
-	
+	state = ev_document_forms_form_field_button_get_state (EV_DOCUMENT_FORMS (view->document), field);
+
+	/* FIXME: it actually depends on NoToggleToOff flags */
+	if (field_button->type == EV_FORM_FIELD_BUTTON_RADIO && state && field_button->state)
+	{
+		return;
+	}
+
+	region = ev_view_form_field_get_region (view, field);
+
+	/* For radio buttons and checkbox buttons that are in a set
+	 * we need to update also the region for the current selected item
+	 */
+	forms_mapping = ev_page_cache_get_form_field_mapping (view->page_cache, field->page->index);
+
+	for (l = ev_mapping_list_get_list (forms_mapping); l; l = g_list_next (l))
+	{
+		EvFormField *button = ((EvMapping *)(l->data))->data;
+		cairo_region_t *button_region;
+
+		if (button->id == field->id)
+		{
+			continue;
+		}
+
+		/* FIXME: only buttons in the same group should be updated */
+		if (!EV_IS_FORM_FIELD_BUTTON (button) ||
+			EV_FORM_FIELD_BUTTON (button)->type != field_button->type ||
+			EV_FORM_FIELD_BUTTON (button)->state != TRUE)
+		{
+			continue;
+		}
+
+		button_region = ev_view_form_field_get_region (view, button);
+		cairo_region_union (region, button_region);
+		cairo_region_destroy (button_region);
+	}
+
+	/* Update state */
+	ev_document_forms_form_field_button_set_state (EV_DOCUMENT_FORMS (view->document), field, !state);
+
+	ev_view_reload_page (view, field->page->index, region);
+	cairo_region_destroy (region);
+}
+
+static GtkWidget *
+ev_view_form_field_button_create_widget (EvView      *view,
+										 EvFormField *field)
+{
+	EvMappingList *form_mapping;
+	EvMapping *mapping;
+
+	form_mapping = ev_page_cache_get_form_field_mapping (view->page_cache, field->page->index);
+	mapping = ev_mapping_list_find (form_mapping, field);
+	_ev_view_set_focused_element (view, mapping, field->page->index);
+
 	return NULL;
 }
 
@@ -2426,18 +2517,18 @@ ev_view_form_field_choice_create_widget (EvView      *view,
 }
 
 static void
-ev_view_handle_form_field (EvView      *view,
-			   EvFormField *field,
-			   gdouble      x,
-			   gdouble      y)
+ev_view_focus_form_field (EvView      *view,
+			   			  EvFormField *field)
 {
 	GtkWidget     *field_widget = NULL;
 	EvMappingList *form_field_mapping;
 	EvMapping     *mapping;
 
+	_ev_view_set_focused_element (view, NULL, -1);
+
 	if (field->is_read_only)
 		return;
-	
+
 	if (EV_IS_FORM_FIELD_BUTTON (field)) {
 		field_widget = ev_view_form_field_button_create_widget (view, field);
 	} else if (EV_IS_FORM_FIELD_TEXT (field)) {
@@ -2468,6 +2559,28 @@ ev_view_handle_form_field (EvView      *view,
 
 	gtk_widget_show (field_widget);
 	gtk_widget_grab_focus (field_widget);
+}
+
+static void
+ev_view_handle_form_field (EvView      *view,
+						   EvFormField *field)
+{
+	if (field->is_read_only)
+	{
+		return;
+	}
+
+	ev_view_focus_form_field (view, field);
+
+	// if (field->activation_link)
+	// {
+	// 	ev_view_handle_link (view, field->activation_link);
+	// }
+
+	if (EV_IS_FORM_FIELD_BUTTON (field))
+	{
+		ev_view_form_field_button_toggle (view, field);
+	}
 }
 
 /* Annotations */
@@ -2663,7 +2776,7 @@ annotation_window_moved (EvAnnotationWindow *window,
 	view_rect.height = height;
 
 	ev_view_get_page_extents (view, child->page, &page_area, &border);
-	view_rect_to_doc_rect (view, &view_rect, &page_area, &doc_rect);
+	_ev_view_transform_view_rect_to_doc_rect (view, &view_rect, &page_area, &doc_rect);
 	child->orig_x = doc_rect.x1;
 	child->orig_y = doc_rect.y1;
 }
@@ -2709,7 +2822,7 @@ ev_view_create_annotation_window (EvView       *view,
 
 	page = ev_annotation_get_page_index (annot);
 	ev_annotation_window_get_rectangle (EV_ANNOTATION_WINDOW (window), &doc_rect);
-	doc_rect_to_view_rect (view, page, &doc_rect, &view_rect);
+	_ev_view_transform_doc_rect_to_view_rect (view, page, &doc_rect, &view_rect);
 	view_rect.x -= view->scroll_x;
 	view_rect.y -= view->scroll_y;
 
@@ -2788,27 +2901,41 @@ hide_annotation_windows (EvView *view,
 	}
 }
 
-static EvAnnotation *
-ev_view_get_annotation_at_location (EvView  *view,
-				    gdouble  x,
-				    gdouble  y)
+static EvMapping *
+get_annotation_mapping_at_location (EvView  *view,
+				    				gdouble  x,
+				    				gdouble  y,
+				    				gint    *page)
 {
-	gint page = -1;
 	gint x_new = 0, y_new = 0;
 	EvMappingList *annotations_mapping;
 
 	if (!EV_IS_DOCUMENT_ANNOTATIONS (view->document))
 		return NULL;
 
-	if (!get_doc_point_from_location (view, x, y, &page, &x_new, &y_new))
+	if (!get_doc_point_from_location (view, x, y, page, &x_new, &y_new))
 		return NULL;
 
-	annotations_mapping = ev_page_cache_get_annot_mapping (view->page_cache, page);
+	annotations_mapping = ev_page_cache_get_annot_mapping (view->page_cache, *page);
 
 	if (annotations_mapping)
-		return ev_mapping_list_get_data (annotations_mapping, x_new, y_new);
-	else
-		return NULL;
+	{
+		return ev_mapping_list_get (annotations_mapping, x_new, y_new);
+	}
+
+	return NULL;
+}
+
+static EvAnnotation *
+ev_view_get_annotation_at_location (EvView  *view,
+									gdouble  x,
+									gdouble  y)
+{
+	EvMapping *annotation_mapping;
+	gint page;
+
+	annotation_mapping = get_annotation_mapping_at_location (view, x, y, &page);
+	return annotation_mapping ? annotation_mapping->data : NULL;
 }
 
 static void
@@ -2881,8 +3008,8 @@ ev_view_create_annotation (EvView          *view,
 	point.x = x;
 	point.y = y;
 	ev_view_get_page_extents (view, view->current_page, &page_area, &border);
-	view_point_to_doc_point (view, &point, &page_area,
-				 &doc_rect.x1, &doc_rect.y1);
+	_ev_view_transform_view_point_to_doc_point (view, &point, &page_area,
+				 								&doc_rect.x1, &doc_rect.y1);
 	doc_rect.x2 = doc_rect.x1 + 24;
 	doc_rect.y2 = doc_rect.y1 + 24;
 
@@ -2936,7 +3063,7 @@ ev_view_create_annotation (EvView          *view,
 		ev_view_annotation_show_popup_window (view, window);
 	}
 
-	doc_rect_to_view_rect (view, view->current_page, &doc_rect, &view_rect);
+	_ev_view_transform_doc_rect_to_view_rect (view, view->current_page, &doc_rect, &view_rect);
 	view_rect.x -= view->scroll_x;
 	view_rect.y -= view->scroll_y;
 	region = cairo_region_create_rectangle (&view_rect);
@@ -2950,26 +3077,11 @@ void
 ev_view_focus_annotation (EvView    *view,
 			  EvMapping *annot_mapping)
 {
-	GdkRectangle  view_rect;
-	EvAnnotation *annot;
-	guint         page;
-
 	if (!EV_IS_DOCUMENT_ANNOTATIONS (view->document))
 		return;
 
-	if (view->focus_annotation == annot_mapping)
-		return;
-
-	view->focus_annotation = annot_mapping;
-	annot = (EvAnnotation *)annot_mapping->data;
-
-	page = ev_annotation_get_page_index (annot);
-	ev_document_model_set_page (view->model, page);
-
-	doc_rect_to_view_rect (view, page,
-			       &annot_mapping->area, &view_rect);
-	ensure_rectangle_is_visible (view, &view_rect);
-	gtk_widget_queue_draw (GTK_WIDGET (view));
+	_ev_view_set_focused_element (view, annot_mapping,
+								 ev_annotation_get_page_index (EV_ANNOTATION (annot_mapping->data)));
 }
 
 void
@@ -2998,6 +3110,46 @@ ev_view_cancel_add_annotation (EvView *view)
 	view->adding_annot = FALSE;
 	ev_document_misc_get_pointer_position (GTK_WIDGET (view), &x, &y);
 	ev_view_handle_cursor_over_xy (view, x, y);
+}
+
+void
+ev_view_remove_annotation (EvView       *view,
+						   EvAnnotation *annot)
+{
+	guint page;
+
+	g_return_if_fail (EV_IS_VIEW (view));
+	g_return_if_fail (EV_IS_ANNOTATION (annot));
+
+	g_object_ref (annot);
+
+	page = ev_annotation_get_page_index (annot);
+
+	if (EV_IS_ANNOTATION_MARKUP (annot))
+	{
+		EvViewWindowChild *child;
+
+		child = ev_view_find_window_child_for_annot (view, page, annot);
+		if (child)
+		{
+			view->window_children = g_list_remove (view->window_children, child);
+			gtk_widget_destroy (child->window);
+			g_free (child);
+		}
+	}
+	_ev_view_set_focused_element (view, NULL, -1);
+
+	ev_document_doc_mutex_lock ();
+	ev_document_annotations_remove_annotation (EV_DOCUMENT_ANNOTATIONS (view->document), annot);
+	ev_document_doc_mutex_unlock ();
+
+	ev_page_cache_mark_dirty (view->page_cache, page);
+
+	/* FIXME: only redraw the annot area */
+	ev_view_reload_page (view, page, NULL);
+
+	g_signal_emit (view, signals[SIGNAL_ANNOT_REMOVED], 0, annot);
+	g_object_unref (annot);
 }
 
 static gboolean
@@ -3258,7 +3410,7 @@ ev_view_size_allocate (GtkWidget      *widget,
 		if (!gtk_widget_get_visible (child->widget))
 			continue;
 
-		doc_rect_to_view_rect (view, child->page, &child->doc_rect, &view_area);
+		_ev_view_transform_doc_rect_to_view_rect (view, child->page, &child->doc_rect, &view_area);
 		view_area.x -= view->scroll_x;
 		view_area.y -= view->scroll_y;
 
@@ -3282,7 +3434,7 @@ ev_view_size_allocate (GtkWidget      *widget,
 			doc_rect.x1 = child->orig_x;
 			doc_rect.y1 = child->orig_y;
 		}
-		doc_rect_to_view_rect (view, child->page, &doc_rect, &view_rect);
+		_ev_view_transform_doc_rect_to_view_rect (view, child->page, &doc_rect, &view_rect);
 		view_rect.x -= view->scroll_x;
 		view_rect.y -= view->scroll_y;
 
@@ -3410,6 +3562,37 @@ ev_view_realize (GtkWidget *widget)
 					  window);
 }
 
+static void
+draw_focus (EvView       *view,
+			cairo_t      *cr,
+			gint          page,
+			GdkRectangle *clip)
+{
+	GtkWidget *widget = GTK_WIDGET (view);
+	GdkRectangle rect;
+	GdkRectangle intersect;
+
+	if (view->focused_element_page != page)
+	{
+		return;
+	}
+
+	if (!ev_view_get_focused_area (view, &rect))
+	{
+		return;
+	}
+
+	if (gdk_rectangle_intersect (&rect, clip, &intersect))
+	{
+		gtk_render_focus (gtk_widget_get_style_context (widget),
+						  cr,
+						  intersect.x,
+						  intersect.y,
+						  intersect.width,
+						  intersect.height);
+	}
+}
+
 static gboolean
 ev_view_draw (GtkWidget      *widget,
 	      cairo_t *cr)
@@ -3454,8 +3637,8 @@ ev_view_draw (GtkWidget      *widget,
 			highlight_find_results (view, cr, i);
 		if (page_ready && EV_IS_DOCUMENT_ANNOTATIONS (view->document))
 			show_annotation_windows (view, i);
-		if (page_ready && view->focus_annotation)
-                        focus_annotation (view, cr, i, &clip_rect);
+		if (page_ready && view->focused_element)
+			draw_focus (view, cr, i, &clip_rect);
 		if (page_ready && view->synctex_result)
 			highlight_forward_search_results (view, cr, i);
 	}
@@ -3464,6 +3647,39 @@ ev_view_draw (GtkWidget      *widget,
                 GTK_WIDGET_CLASS (ev_view_parent_class)->draw (widget, cr);
 
 	return FALSE;
+}
+
+static void
+ev_view_set_focused_element_at_location (EvView *view,
+										 gdouble x,
+										 gdouble y)
+{
+	EvMapping *mapping;
+	EvFormField *field;
+	gint page;
+
+	mapping = get_annotation_mapping_at_location (view, x, y, &page);
+	if (mapping)
+	{
+		_ev_view_set_focused_element (view, mapping, page);
+		return;
+	}
+
+	mapping = get_link_mapping_at_location (view, x, y, &page);
+	if (mapping)
+	{
+		_ev_view_set_focused_element (view, mapping, page);
+		return;
+	}
+
+	if ((field = ev_view_get_form_field_at_location (view, x, y)))
+	{
+		ev_view_remove_all (view);
+		ev_view_focus_form_field (view, field);
+		return;
+	}
+
+	_ev_view_set_focused_element (view, NULL, -1);
 }
 
 static gboolean
@@ -3661,6 +3877,8 @@ ev_view_button_press_event (GtkWidget      *widget,
 			EvImage *image;
 			EvAnnotation *annot;
 			EvFormField *field;
+			EvMapping *link;
+			gint page;
 
 			if (event->state & GDK_CONTROL_MASK)
 				return ev_view_synctex_backward_search (view, event->x , event->y);
@@ -3681,7 +3899,9 @@ ev_view_button_press_event (GtkWidget      *widget,
 				ev_view_handle_annotation (view, annot, event->x, event->y, event->time);
 			} else if ((field = ev_view_get_form_field_at_location (view, event->x, event->y))) {
 				ev_view_remove_all (view);
-				ev_view_handle_form_field (view, field, event->x, event->y);
+				ev_view_handle_form_field (view, field);
+			} else if ((link = get_link_mapping_at_location (view, event->x, event->y, &page))){
+				_ev_view_set_focused_element (view, link, page);
 			} else if (!location_in_text (view, event->x + view->scroll_x, event->y + view->scroll_y) &&
 				   (image = ev_view_get_image_at_location (view, event->x, event->y))) {
 				if (view->image_dnd_info.image)
@@ -3693,15 +3913,13 @@ ev_view_button_press_event (GtkWidget      *widget,
 				view->image_dnd_info.start.y = event->y + view->scroll_y;
 			} else {
 				ev_view_remove_all (view);
+				_ev_view_set_focused_element (view, NULL, -1);
 
 				if (view->synctex_result) {
 					g_free (view->synctex_result);
 					view->synctex_result = NULL;
 					gtk_widget_queue_draw (widget);
 				}
-
-				if (view->focus_annotation)
-					view->focus_annotation = NULL;
 
 				if (EV_IS_SELECTION (view->document))
 					start_selection_for_event (view, event);
@@ -3717,10 +3935,11 @@ ev_view_button_press_event (GtkWidget      *widget,
 			view->drag_info.vadj = gtk_adjustment_get_value (view->vadjustment);
 
 			ev_view_set_cursor (view, EV_VIEW_CURSOR_DRAG);
-
+			ev_view_set_focused_element_at_location (view, event->x, event->y);
 			return TRUE;
 		case 3:
 			view->scroll_info.start_y = event->y;
+			ev_view_set_focused_element_at_location (view, event->x, event->y);
 			return ev_view_do_popup_menu (view, event->x, event->y);
 	}
 	
@@ -4319,7 +4538,7 @@ highlight_find_results (EvView *view, cairo_t *cr, int page)
 		}
 
 		rectangle = ev_view_find_get_result (view, page, i);
-		doc_rect_to_view_rect (view, page, rectangle, &view_rectangle);
+		_ev_view_transform_doc_rect_to_view_rect (view, page, rectangle, &view_rectangle);
 		draw_rubberband (view, cr, &view_rectangle, alpha);
         }
 }
@@ -4333,7 +4552,7 @@ highlight_forward_search_results (EvView *view, cairo_t *cr, int page)
 	if (GPOINTER_TO_INT (mapping->data) != page)
 		return;
 
-	doc_rect_to_view_rect (view, page, &mapping->area, &rect);
+	_ev_view_transform_doc_rect_to_view_rect (view, page, &mapping->area, &rect);
 
 	cairo_save (cr);
 	cairo_set_source_rgb (cr, 1., 0., 0.);
@@ -4343,28 +4562,6 @@ highlight_forward_search_results (EvView *view, cairo_t *cr, int page)
 			 rect.width, rect.height);
 	cairo_stroke (cr);
 	cairo_restore (cr);
-}
-
-static void
-focus_annotation (EvView       *view,
-		  cairo_t      *cr,
-		  gint          page,
-		  GdkRectangle *clip)
-{
-	GtkWidget    *widget = GTK_WIDGET (view);
-	GdkRectangle  rect;
-	EvMapping    *mapping = view->focus_annotation;
-	EvAnnotation *annot = (EvAnnotation *)mapping->data;
-
-	if (ev_annotation_get_page_index (annot) != page)
-		return;
-
-	doc_rect_to_view_rect (view, page, &mapping->area, &rect);
-	gtk_render_focus (gtk_widget_get_style_context (widget),
-			  cr,
-			  rect.x - view->scroll_x,
-			  rect.y - view->scroll_y,
-			  rect.width + 1, rect.height + 1);
 }
 
 static void
@@ -4593,6 +4790,7 @@ ev_view_dispose (GObject *object)
 	EvView *view = EV_VIEW (object);
 
 	if (view->model) {
+		g_signal_handlers_disconnect_by_data (view->model, view);
 		g_object_unref (view->model);
 		view->model = NULL;
 	}
@@ -4611,6 +4809,8 @@ ev_view_dispose (GObject *object)
 		g_object_unref (view->page_cache);
 		view->page_cache = NULL;
 	}
+
+	ev_view_find_cancel (view);
 
 	ev_view_window_children_free (view);
 
@@ -4985,6 +5185,14 @@ ev_view_class_init (EvViewClass *class)
 		         g_cclosure_marshal_VOID__OBJECT,
 		         G_TYPE_NONE, 1,
 			 EV_TYPE_ANNOTATION);
+	signals[SIGNAL_ANNOT_REMOVED] = g_signal_new ("annot-removed",
+				G_TYPE_FROM_CLASS (object_class),
+				G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
+				G_STRUCT_OFFSET (EvViewClass, annot_removed),
+				NULL, NULL,
+				g_cclosure_marshal_VOID__OBJECT,
+				G_TYPE_NONE, 1,
+				EV_TYPE_ANNOTATION);
 	signals[SIGNAL_LAYERS_CHANGED] = g_signal_new ("layers-changed",
 			 G_TYPE_FROM_CLASS (object_class),
 		         G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
@@ -5538,12 +5746,7 @@ ev_view_set_model (EvView          *view,
 		return;
 
 	if (view->model) {
-		g_signal_handlers_disconnect_by_func (view->model,
-						      ev_view_document_changed_cb,
-						      view);
-		g_signal_handlers_disconnect_by_func (view->model,
-						      ev_view_page_changed_cb,
-						      view);
+		g_signal_handlers_disconnect_by_data (view->model, view);
 		g_object_unref (view->model);
 	}
 	view->model = g_object_ref (model);
@@ -5874,7 +6077,7 @@ jump_to_find_result (EvView *view)
 		GdkRectangle view_rect;
 
 		rect = ev_view_find_get_result (view, page, view->find_result);
-		doc_rect_to_view_rect (view, page, rect, &view_rect);
+		_ev_view_transform_doc_rect_to_view_rect (view, page, rect, &view_rect);
 		ensure_rectangle_is_visible (view, &view_rect);
 		view->jump_to_find_result = FALSE;
 	}
@@ -5916,6 +6119,26 @@ jump_to_find_page (EvView *view, EvViewFindDirection direction, gint shift)
 			break;
 		}
 	}
+}
+
+static void
+find_job_updated_cb (EvJobFind *job, gint page, EvView *view)
+{
+	ev_view_find_changed (view, ev_job_find_get_results (job), page);
+}
+
+void
+ev_view_find_started (EvView *view, EvJobFind *job)
+{
+	if (view->find_job == job)
+	{
+		return;
+	}
+
+	ev_view_find_cancel (view);
+	view->find_job = g_object_ref (job);
+
+	g_signal_connect (job, "updated", G_CALLBACK (find_job_updated_cb), view);
 }
 
 void
@@ -5970,7 +6193,7 @@ ev_view_find_search_changed (EvView *view)
 {
 	/* search string has changed, focus on new search result */
 	view->jump_to_find_result = TRUE;
-	view->find_pages = NULL;
+	ev_view_find_cancel (view);
 }
 
 void
@@ -5984,6 +6207,15 @@ void
 ev_view_find_cancel (EvView *view)
 {
 	view->find_pages = NULL;
+
+	if (!view->find_job)
+	{
+		return;
+	}
+
+	g_signal_handlers_disconnect_by_func (view->find_job, find_job_updated_cb, view);
+	g_object_unref (view->find_job);
+	view->find_job = NULL;
 }
 
 /*** Synctex ***/
@@ -6009,7 +6241,7 @@ ev_view_highlight_forward_search (EvView       *view,
 	page = GPOINTER_TO_INT (mapping->data);
 	ev_document_model_set_page (view->model, page);
 
-	doc_rect_to_view_rect (view, page, &mapping->area, &view_rect);
+	_ev_view_transform_doc_rect_to_view_rect (view, page, &mapping->area, &view_rect);
 	ensure_rectangle_is_visible (view, &view_rect);
 	gtk_widget_queue_draw (GTK_WIDGET (view));
 }
@@ -6049,8 +6281,7 @@ compute_new_selection_rect (EvView       *view,
 
 				selection = g_new0 (EvViewSelection, 1);
 				selection->page = i;
-				view_rect_to_doc_rect (view, &overlap, &page_area,
-						       &(selection->rect));
+				_ev_view_transform_view_rect_to_doc_rect (view, &overlap, &page_area, &(selection->rect));
 
 				list = g_list_append (list, selection);
 			}
@@ -6140,9 +6371,9 @@ compute_new_selection_text (EvView          *view,
 			point = stop;
 
 		if (i == first)
-			view_point_to_doc_point (view, point, &page_area,
-						 &selection->rect.x1,
-						 &selection->rect.y1);
+			_ev_view_transform_view_point_to_doc_point (view, point, &page_area,
+														&selection->rect.x1,
+														&selection->rect.y1);
 
 		/* If the selection is contained within just one page,
 		 * make sure we don't write 'start' into both points
@@ -6151,9 +6382,9 @@ compute_new_selection_text (EvView          *view,
 			point = stop;
 
 		if (i == last)
-			view_point_to_doc_point (view, point, &page_area,
-						 &selection->rect.x2,
-						 &selection->rect.y2);
+			_ev_view_transform_view_point_to_doc_point (view, point, &page_area,
+														&selection->rect.x2,
+														&selection->rect.y2);
 
 		list = g_list_append (list, selection);
 	}

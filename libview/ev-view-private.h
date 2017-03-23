@@ -122,7 +122,8 @@ struct _EvView {
 	EvDocument *document;
 
 	/* Find */
-	GList **find_pages;
+	EvJobFind *find_job;
+	GList **find_pages; /* Backwards compatibility */
 	gint find_result;
 	gboolean jump_to_find_result;
 	gboolean highlight_find_results;
@@ -199,9 +200,12 @@ struct _EvView {
 	/* Annotations */
 	GList             *window_children;
 	EvViewWindowChild *window_child_focus;
-	EvMapping         *focus_annotation;
 	gboolean           adding_annot;
 	EvAnnotationType   adding_annot_type;
+
+	/* Focus */
+	EvMapping *focused_element;
+	guint focused_element_page;
 
 	/* Synctex */
 	EvMapping *synctex_result;
@@ -237,15 +241,38 @@ struct _EvViewClass {
 					   EvSourceLink   *link);
 	void    (*annot_added)            (EvView         *view,
 					   EvAnnotation   *annot);
+	void    (*annot_removed)          (EvView         *view,
+									   EvAnnotation   *annot);
 	void    (*layers_changed)         (EvView         *view);
 };
 
 void _get_page_size_for_scale_and_rotation (EvDocument *document,
-					    gint        page,
-					    gdouble     scale,
-					    gint        rotation,
-					    gint       *page_width,
-					    gint       *page_height);
+										    gint        page,
+										    gdouble     scale,
+										    gint        rotation,
+										    gint       *page_width,
+										    gint       *page_height);
+void _ev_view_transform_view_point_to_doc_point (EvView       *view,
+												 GdkPoint     *view_point,
+												 GdkRectangle *page_area,
+												 double       *doc_point_x,
+												 double       *doc_point_y);
+void _ev_view_transform_view_rect_to_doc_rect (EvView       *view,
+										       GdkRectangle *view_rect,
+										       GdkRectangle *page_area,
+										       EvRectangle  *doc_rect);
+void _ev_view_transform_doc_point_to_view_point (EvView   *view,
+												 int       page,
+												 EvPoint  *doc_point,
+												 GdkPoint *view_point);
+void _ev_view_transform_doc_rect_to_view_rect (EvView       *view,
+										       int           page,
+										       EvRectangle  *doc_rect,
+										       GdkRectangle *view_rect);
+
+void _ev_view_set_focused_element (EvView *view,
+								   EvMapping *element_mapping,
+								   gint page);
 
 #endif  /* __EV_VIEW_PRIVATE_H__ */
 
